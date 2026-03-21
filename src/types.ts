@@ -1,0 +1,222 @@
+import type {
+  BlockStreamingCoalesceConfig,
+  DmConfig,
+  DmPolicy,
+  GroupPolicy,
+  GroupToolPolicyConfig,
+  OpenClawConfig,
+} from "./openclaw-compat.js";
+
+export type GeweGroupTriggerMode = "at" | "quote" | "at_or_quote" | "any_message";
+export type GeweDmTriggerMode = "any_message" | "quote";
+export type GeweGroupReplyMode = "plain" | "quote_source" | "at_sender";
+export type GeweDeprecatedGroupReplyMode = "quote_and_at";
+export type GeweGroupReplyModeInput = GeweGroupReplyMode | GeweDeprecatedGroupReplyMode;
+export type ResolvedGeweGroupReplyMode = GeweGroupReplyMode | "quote_and_at_compat";
+export type GeweDmReplyMode = "plain" | "quote_source";
+
+export type GeweGroupTriggerConfig = {
+  mode?: GeweGroupTriggerMode;
+};
+
+export type GeweDmTriggerConfig = {
+  mode?: GeweDmTriggerMode;
+};
+
+export type GeweGroupReplyConfig = {
+  mode?: GeweGroupReplyModeInput;
+};
+
+export type GeweDmReplyConfig = {
+  mode?: GeweDmReplyMode;
+};
+
+export type GeweBindingIdentitySelfSource = "agent_name" | "agent_id" | "literal";
+export type GeweBindingIdentityRemarkSource =
+  | "agent_id"
+  | "agent_name"
+  | "name_and_id"
+  | "literal";
+
+export type GeweBindingIdentitySelfConfig = {
+  source?: GeweBindingIdentitySelfSource;
+  value?: string;
+};
+
+export type GeweBindingIdentityRemarkConfig = {
+  source?: GeweBindingIdentityRemarkSource;
+  value?: string;
+};
+
+export type GeweGroupBindingIdentityConfig = {
+  enabled?: boolean;
+  selfNickname?: GeweBindingIdentitySelfConfig;
+  remark?: GeweBindingIdentityRemarkConfig;
+};
+
+export type GeweGroupConfig = {
+  requireMention?: boolean;
+  tools?: GroupToolPolicyConfig;
+  skills?: string[];
+  enabled?: boolean;
+  allowFrom?: string[];
+  systemPrompt?: string;
+  trigger?: GeweGroupTriggerConfig;
+  reply?: GeweGroupReplyConfig;
+  bindingIdentity?: GeweGroupBindingIdentityConfig;
+};
+
+export type GeweDmConfig = DmConfig & {
+  skills?: string[];
+  systemPrompt?: string;
+  trigger?: GeweDmTriggerConfig;
+  reply?: GeweDmReplyConfig;
+};
+
+export type GeweAccountConfig = {
+  name?: string;
+  enabled?: boolean;
+  apiBaseUrl?: string;
+  token?: string;
+  tokenFile?: string;
+  appId?: string;
+  appIdFile?: string;
+  webhookPort?: number;
+  webhookHost?: string;
+  webhookPath?: string;
+  webhookSecret?: string;
+  webhookPublicUrl?: string;
+  mediaHost?: string;
+  mediaPort?: number;
+  mediaPath?: string;
+  mediaPublicUrl?: string;
+  mediaMaxMb?: number;
+  s3Enabled?: boolean;
+  s3Endpoint?: string;
+  s3Region?: string;
+  s3Bucket?: string;
+  s3AccessKeyId?: string;
+  s3SecretAccessKey?: string;
+  s3SessionToken?: string;
+  s3ForcePathStyle?: boolean;
+  s3PublicBaseUrl?: string;
+  s3KeyPrefix?: string;
+  s3UrlMode?: "public" | "presigned";
+  s3PresignExpiresSec?: number;
+  voiceAutoConvert?: boolean;
+  voiceFfmpegPath?: string;
+  voiceSilkPath?: string;
+  voiceSilkArgs?: string[];
+  voiceSilkPipe?: boolean;
+  voiceSampleRate?: number;
+  voiceDecodePath?: string;
+  voiceDecodeArgs?: string[];
+  voiceDecodeSampleRate?: number;
+  voiceDecodeOutput?: "pcm" | "wav";
+  silkAutoDownload?: boolean;
+  silkVersion?: string;
+  silkBaseUrl?: string;
+  silkSha256?: string;
+  silkAllowUnverified?: boolean;
+  silkInstallDir?: string;
+  videoFfmpegPath?: string;
+  videoFfprobePath?: string;
+  videoThumbUrl?: string;
+  downloadMinDelayMs?: number;
+  downloadMaxDelayMs?: number;
+  dmPolicy?: DmPolicy;
+  allowFrom?: Array<string | number>;
+  groupAllowFrom?: Array<string | number>;
+  groupPolicy?: GroupPolicy;
+  groups?: Record<string, GeweGroupConfig>;
+  historyLimit?: number;
+  dmHistoryLimit?: number;
+  dms?: Record<string, GeweDmConfig>;
+  textChunkLimit?: number;
+  chunkMode?: "length" | "newline";
+  autoQuoteReply?: boolean;
+  blockStreaming?: boolean;
+  blockStreamingCoalesce?: BlockStreamingCoalesceConfig;
+};
+
+export type GeweConfig = {
+  accounts?: Record<string, GeweAccountConfig>;
+} & GeweAccountConfig;
+
+export type CoreConfig = OpenClawConfig & {
+  channels?: OpenClawConfig["channels"] & {
+    defaults?: {
+      groupPolicy?: GroupPolicy;
+    };
+    "synodeai"?: GeweConfig;
+  };
+};
+
+export type GeweTokenSource = "env" | "config" | "configFile" | "none";
+
+export type GeweAppIdSource = "env" | "config" | "configFile" | "none";
+
+export type ResolvedGeweAccount = {
+  accountId: string;
+  name?: string;
+  enabled: boolean;
+  token: string;
+  tokenSource: GeweTokenSource;
+  appId: string;
+  appIdSource: GeweAppIdSource;
+  config: GeweAccountConfig;
+};
+
+export type GeweCallbackPayload = {
+  type_name?: string;
+  appid?: string;
+  wxId?: string;
+  data?: {
+    MsgId?: number | string;
+    NewMsgId?: number | string;
+    FromUserName?: { string?: string };
+    ToUserName?: { string?: string };
+    MsgType?: number;
+    MsgSource?: string;
+    Content?: { string?: string };
+    CreateTime?: number;
+    PushContent?: string;
+  };
+};
+
+export type GeweInboundMessage = {
+  messageId: string;
+  newMessageId: string;
+  appId: string;
+  botWxid: string;
+  fromId: string;
+  toId: string;
+  senderId: string;
+  senderName?: string;
+  text: string;
+  msgType: number;
+  atWxids?: string[];
+  atAll?: boolean;
+  xml?: string;
+  timestamp: number;
+  isGroupChat: boolean;
+};
+
+export type GeweWebhookServerOptions = {
+  port: number;
+  host: string;
+  path: string;
+  mediaPath?: string;
+  secret?: string;
+  onRawPayload?: (raw: string) => void;
+  onMessage: (message: GeweInboundMessage) => void | Promise<void>;
+  onError?: (error: Error) => void;
+  abortSignal?: AbortSignal;
+};
+
+export type GeweSendResult = {
+  messageId: string;
+  newMessageId?: string;
+  toWxid: string;
+  timestamp?: number;
+};

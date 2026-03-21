@@ -1,0 +1,87 @@
+import type { ResolvedGeweAccount } from "./types.js";
+
+export type GeweApiResponse<T> = {
+  code: number;
+  msg: string;
+  data?: T;
+};
+
+const GEWE_LARGE_ID_FIELD_PATTERN =
+  /("(?:msgId|newMsgId|MsgId|NewMsgId)"\s*:\s*)(-?\d{16,})(?=[,\}])/g;
+
+export function buildGeweUrl(baseUrl: string, path: string): string {
+  const base = baseUrl.replace(/\/$/, "");
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+async function readResponseText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+export function parseGeweJsonText<T>(text: string): T {
+  const normalized = text.replace(GEWE_LARGE_ID_FIELD_PATTERN, '$1"$2"');
+  return JSON.parse(normalized) as T;
+}
+
+export async function postGeweJson<T>(params: {
+  baseUrl: string;
+  token: string;
+  path: string;
+  body: Record<string, unknown>;
+}): Promise<GeweApiResponse<T>> {
+  const url = buildGeweUrl(params.baseUrl, params.path);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer "+params.token,
+    },
+    body: JSON.stringify(params.body),
+  });
+  if (!res.ok) {
+    const text = await readResponseText(res);
+    const detail = text ? `: ${text}` : "";
+    throw new Error(`API request failed (${res.status})${detail}`);
+  }
+  
+  const text = await readResponseText(res);
+  try {
+    return parseGeweJsonText<GeweApiResponse<T>>(text);
+  } catch (error) {
+    const detail = text ? `: ${text}` : "";
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`API returned invalid JSON (${reason})${detail}`);
+  }
+}
+
+export function assertGeweOk<T>(resp: GeweApiResponse<T>, context: string): T | undefined {
+  if (resp.code !== 200) {
+    const msg = resp.msg?.trim() || "unknown error";
+    throw new Error(`API ${context} failed: ${resp.code} ${msg}`);
+  }
+  return resp.data;
+}
+
+export async function postGeweAccountJson<T>(params: {
+  account: ResolvedGeweAccount;
+  path: string;
+  body?: Record<string, unknown>;
+  context?: string;
+}): Promise<T | undefined> {
+  const baseUrl = params.account.config.apiBaseUrl?.trim() || "https://www.geweapi.com";
+  const resp = await postGeweJson<T>({
+    baseUrl,
+    token: params.account.token,
+    path: params.path,
+    body: {
+      appId: params.account.appId,
+      ...(params.body ?? {}),
+    },
+  });
+  return assertGeweOk(resp, params.context ?? params.path);
+}

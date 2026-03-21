@@ -1,0 +1,241 @@
+import {
+  BlockStreamingCoalesceSchema,
+  DmConfigSchema,
+  DmPolicySchema,
+  GroupPolicySchema,
+  MarkdownConfigSchema,
+  ToolPolicySchema,
+  requireOpenAllowFrom,
+} from "./openclaw-compat.js";
+import type { GeweGroupReplyModeInput } from "./types.js";
+import { z } from "zod";
+const GEWE_GROUP_REPLY_MODES = ["plain", "quote_source", "at_sender", "quote_and_at"] as const;
+const GeweGroupTriggerSchema = z
+  .object({
+    mode: z.enum(["at", "quote", "at_or_quote", "any_message"]).optional(),
+  })
+  .strict();
+
+const GeweDmTriggerSchema = z
+  .object({
+    mode: z.enum(["any_message", "quote"]).optional(),
+  })
+  .strict();
+
+const GeweGroupReplySchema = z
+  .object({
+      mode: z
+      .custom<GeweGroupReplyModeInput>(
+        (value) => typeof value === "string" && GEWE_GROUP_REPLY_MODES.includes(value as GeweGroupReplyModeInput),
+        {
+          message:
+            "invalid GeWe group reply mode; supported values are plain, quote_source, at_sender (quote_and_at is accepted only for compatibility)",
+        },
+      )
+      .optional(),
+  })
+  .strict();
+
+const GeweDmReplySchema = z
+  .object({
+    mode: z.enum(["plain", "quote_source"]).optional(),
+  })
+  .strict();
+
+const GeweBindingIdentitySelfSchema = z
+  .object({
+    source: z.enum(["agent_name", "agent_id", "literal"]).optional(),
+    value: z.string().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.source === "literal" && !value.value?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: "value is required when source=literal",
+      });
+    }
+  });
+
+const GeweBindingIdentityRemarkSchema = z
+  .object({
+    source: z.enum(["agent_id", "agent_name", "name_and_id", "literal"]).optional(),
+    value: z.string().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.source === "literal" && !value.value?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: "value is required when source=literal",
+      });
+    }
+  });
+
+const GeweBindingIdentitySchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    selfNickname: GeweBindingIdentitySelfSchema.optional(),
+    remark: GeweBindingIdentityRemarkSchema.optional(),
+  })
+  .strict();
+
+export const GeweGroupSchema = z
+  .object({
+    requireMention: z.boolean().optional(),
+    tools: ToolPolicySchema.optional(),
+    skills: z.array(z.string()).optional(),
+    enabled: z.boolean().optional(),
+    allowFrom: z.array(z.string()).optional(),
+    systemPrompt: z.string().optional(),
+    trigger: GeweGroupTriggerSchema.optional(),
+    reply: GeweGroupReplySchema.optional(),
+    bindingIdentity: GeweBindingIdentitySchema.optional(),
+  })
+  .strict();
+
+export const GeweDmSchema = DmConfigSchema.extend({
+  skills: z.array(z.string()).optional(),
+  systemPrompt: z.string().optional(),
+  trigger: GeweDmTriggerSchema.optional(),
+  reply: GeweDmReplySchema.optional(),
+}).strict();
+
+export const GeweAccountSchemaBase = z
+  .object({
+    name: z.string().optional(),
+    enabled: z.boolean().optional(),
+    markdown: MarkdownConfigSchema,
+    apiBaseUrl: z.string().optional(),
+    token: z.string().optional(),
+    tokenFile: z.string().optional(),
+    appId: z.string().optional(),
+    appIdFile: z.string().optional(),
+    webhookPort: z.number().int().positive().optional(),
+    webhookHost: z.string().optional(),
+    webhookPath: z.string().optional(),
+    webhookSecret: z.string().optional(),
+    webhookPublicUrl: z.string().optional(),
+    mediaPort: z.number().int().positive().optional(),
+    mediaHost: z.string().optional(),
+    mediaPath: z.string().optional(),
+    mediaPublicUrl: z.string().optional(),
+    mediaMaxMb: z.number().positive().optional(),
+    s3Enabled: z.boolean().optional(),
+    s3Endpoint: z.string().optional(),
+    s3Region: z.string().optional(),
+    s3Bucket: z.string().optional(),
+    s3AccessKeyId: z.string().optional(),
+    s3SecretAccessKey: z.string().optional(),
+    s3SessionToken: z.string().optional(),
+    s3ForcePathStyle: z.boolean().optional(),
+    s3PublicBaseUrl: z.string().optional(),
+    s3KeyPrefix: z.string().optional(),
+    s3UrlMode: z.enum(["public", "presigned"]).optional(),
+    s3PresignExpiresSec: z.number().int().positive().optional(),
+    voiceAutoConvert: z.boolean().optional(),
+    voiceFfmpegPath: z.string().optional(),
+    voiceSilkPath: z.string().optional(),
+    voiceSilkArgs: z.array(z.string()).optional(),
+    voiceSilkPipe: z.boolean().optional(),
+    voiceSampleRate: z.number().int().positive().optional(),
+    voiceDecodePath: z.string().optional(),
+    voiceDecodeArgs: z.array(z.string()).optional(),
+    voiceDecodeSampleRate: z.number().int().positive().optional(),
+    voiceDecodeOutput: z.enum(["pcm", "wav"]).optional(),
+    silkAutoDownload: z.boolean().optional(),
+    silkVersion: z.string().optional(),
+    silkBaseUrl: z.string().optional(),
+    silkSha256: z.string().optional(),
+    silkAllowUnverified: z.boolean().optional(),
+    silkInstallDir: z.string().optional(),
+    videoFfmpegPath: z.string().optional(),
+    videoFfprobePath: z.string().optional(),
+    videoThumbUrl: z.string().optional(),
+    downloadMinDelayMs: z.number().int().min(0).optional(),
+    downloadMaxDelayMs: z.number().int().min(0).optional(),
+    dmPolicy: DmPolicySchema.optional().default("pairing"),
+    allowFrom: z.array(z.string()).optional(),
+    groupAllowFrom: z.array(z.string()).optional(),
+    groupPolicy: GroupPolicySchema.optional().default("allowlist"),
+    groups: z.record(z.string(), GeweGroupSchema.optional()).optional(),
+    historyLimit: z.number().int().min(0).optional(),
+    dmHistoryLimit: z.number().int().min(0).optional(),
+    dms: z.record(z.string(), GeweDmSchema.optional()).optional(),
+    textChunkLimit: z.number().int().positive().optional(),
+    chunkMode: z.enum(["length", "newline"]).optional(),
+    autoQuoteReply: z.boolean().optional(),
+    blockStreaming: z.boolean().optional(),
+    blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const min = value.downloadMinDelayMs;
+    const max = value.downloadMaxDelayMs;
+    if (typeof min === "number" && typeof max === "number" && min > max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["downloadMaxDelayMs"],
+        message: "downloadMaxDelayMs must be >= downloadMinDelayMs",
+      });
+    }
+
+    if (value.s3Enabled === true) {
+      const required: Array<keyof typeof value> = [
+        "s3Endpoint",
+        "s3Region",
+        "s3Bucket",
+        "s3AccessKeyId",
+        "s3SecretAccessKey",
+      ];
+      for (const key of required) {
+        const raw = value[key];
+        if (typeof raw !== "string" || !raw.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${String(key)} is required when s3Enabled=true`,
+          });
+        }
+      }
+      const mode = value.s3UrlMode ?? "public";
+      if (mode === "public") {
+        const base = value.s3PublicBaseUrl?.trim();
+        if (!base) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["s3PublicBaseUrl"],
+            message: "s3PublicBaseUrl is required when s3UrlMode=public",
+          });
+        }
+      }
+    }
+  });
+
+export const GeweAccountSchema = GeweAccountSchemaBase.superRefine((value, ctx) => {
+  const pathHint = "channels.synodeai";
+  requireOpenAllowFrom({
+    policy: value.dmPolicy,
+    allowFrom: value.allowFrom,
+    ctx,
+    path: ["allowFrom"],
+    message:
+      `${pathHint}.dmPolicy="open" requires ${pathHint}.allowFrom to include "*"`,
+  });
+});
+
+export const GeweConfigSchema = GeweAccountSchemaBase.extend({
+  accounts: z.record(z.string(), GeweAccountSchema.optional()).optional(),
+}).superRefine((value, ctx) => {
+  const pathHint = "channels.synodeai";
+  requireOpenAllowFrom({
+    policy: value.dmPolicy,
+    allowFrom: value.allowFrom,
+    ctx,
+    path: ["allowFrom"],
+    message:
+      `${pathHint}.dmPolicy="open" requires ${pathHint}.allowFrom to include "*"`,
+  });
+});
