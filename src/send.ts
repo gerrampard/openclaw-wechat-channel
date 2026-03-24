@@ -1,6 +1,10 @@
 import { assertGeweOk, postGeweJson } from "./api.js";
-import type { GeweSendResult, ResolvedGeweAccount } from "./types.js";
+import type { CoreConfig, GeweSendResult, ResolvedGeweAccount } from "./types.js";
+import { wxId } from "./monitor.js";
 
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 type GeweSendContext = {
   baseUrl: string;
   token: string;
@@ -75,13 +79,29 @@ export async function sendTextGewe(params: {
     },
   });
   const data = assertGeweOk(resp, "postText");
+  const account = params.account;
+  const sentMessage = {
+    messageId: String(data.msgId || data.newMsgId || Date.now()),
+    newMessageId: String(data.newMsgId || data.msgId || Date.now()),
+    botWxid: params.toWxid,
+    fromId: params.toWxid,
+    toId: params.toWxid,
+    senderId: wxId,
+    senderName: wxId,
+    text: params.content,
+    msgType: 1,
+    isGroupChat: params.toWxid.endsWith("@chatroom"),
+    timestamp: Date.now()
+  };
+  saveMessageToFile(sentMessage, account.config as CoreConfig);
   return resolveSendResult({ toWxid: params.toWxid, data });
 }
 
 export async function sendImageGewe(params: {
   account: ResolvedGeweAccount;
   toWxid: string;
-  imgUrl: string;
+  imgUrl?: string;
+  imgBase64?: string;
 }): Promise<GeweSendResult> {
   const ctx = buildContext(params.account);
   const resp = await postGeweJson<GeweSendResponseData>({
@@ -91,7 +111,8 @@ export async function sendImageGewe(params: {
     body: {
       appId: ctx.appId,
       toWxid: params.toWxid,
-      imgUrl: params.imgUrl,
+      base64: params.imgBase64,
+      imgUrl: params.imgUrl
     },
   });
   const data = assertGeweOk(resp, "postImage");
@@ -389,4 +410,99 @@ export async function forwardMiniAppGewe(params: {
       coverImgUrl: params.coverImgUrl,
     },
   });
+}
+function saveMessageToFile(message: GeweInboundMessage, config?: CoreConfig) {
+  
+  if (message.msgType !== 1) {
+    return;
+  }
+
+  try {
+    const synodeaiConfig = config;
+    
+    if (!synodeaiConfig?.isSaveLog) {
+      return;
+    }
+
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const defaultDir = process.platform === 'win32' ? "C:\\openclaw" : process.platform === 'darwin' ? "~/Library/Application Support/openclaw" : "~/.openclaw";
+    const baseDir = synodeaiConfig.logAddress || defaultDir;
+    const resolvedBaseDir = baseDir.replace(/^~/, homedir());
+    const chatDir = join(resolvedBaseDir, "memory", "chat");
+
+    const isGroup = message.isGroupChat;
+    const entityId = message.toId;
+    const entityDir = join(chatDir, isGroup ? "groups" : "private", entityId);
+    const messageFile = join(entityDir, `${dateStr}.jsonl`);
+
+    mkdirSync(entityDir, { recursive: true });
+
+    const content = {
+      newMessageId: message.newMessageId,
+      timestamp: message.timestamp,
+      type: message.msgType,
+      senderId: message.senderId,
+      senderName: message.senderName,
+      content: message.text,
+      isMe: true,
+    };
+
+    writeFileSync(messageFile, JSON.stringify(content) + '\n', { flag: 'a' });
+
+    const profileFile = join(entityDir, "profile.json");
+    if (!existsSync(profileFile)) {
+      const profile = {
+        id: entityId,
+        name: message.senderName,
+        type: isGroup ? "group" : "private",
+        createdAt: Date.now(),
+        lastMessageAt: message.timestamp
+      };
+      writeFileSync(profileFile, JSON.stringify(profile, null, 2));
+    } else {
+      const profile = JSON.parse(readFileSync(profileFile, 'utf8'));
+      profile.lastMessageAt = message.timestamp;
+      if (message.senderName) {
+        profile.name = message.senderName;
+      }
+      writeFileSync(profileFile, JSON.stringify(profile, null, 2));
+    }
+
+    const indexFile = join(chatDir, "index.json");
+    if (!existsSync(indexFile)) {
+      const index = {
+        entities: [
+          {
+            id: entityId,
+            name: message.senderName,
+            type: isGroup ? "group" : "private",
+            lastMessageAt: message.timestamp
+          }
+        ],
+        updatedAt: Date.now()
+      };
+      writeFileSync(indexFile, JSON.stringify(index, null, 2));
+    } else {
+      const index = JSON.parse(readFileSync(indexFile, 'utf8'));
+      const existingEntity = index.entities.find((e: any) => e.id === entityId);
+      if (existingEntity) {
+        existingEntity.lastMessageAt = message.timestamp;
+        if (message.senderName) {
+          existingEntity.name = message.senderName;
+        }
+      } else {
+        index.entities.push({
+          id: entityId,
+          name: message.senderName,
+          type: isGroup ? "group" : "private",
+          lastMessageAt: message.timestamp
+        });
+      }
+      index.updatedAt = Date.now();
+      writeFileSync(indexFile, JSON.stringify(index, null, 2));
+    }
+  } catch (error) {
+    console.error("保存消息到文件失败:", error);
+  }
 }

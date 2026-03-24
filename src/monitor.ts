@@ -1,5 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
+import { feedGroupStyleMessage } from "./group-style.js";
 import {
   DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
   DEFAULT_WEBHOOK_MAX_BODY_BYTES,
@@ -135,16 +139,25 @@ function parseWebhookPayload(body: string): GeweCallbackPayload | null {
   }
 }
 
-function payloadToInboundMessage(payload: GeweCallbackPayload): GeweInboundMessage | null {
+export let wxId = "";
+
+function payloadToInboundMessage(payload: GeweCallbackPayload, config?: CoreConfig): GeweInboundMessage | null {
   console.log("收到回调消息" + JSON.stringify(payload));
+
+
+
   const appId = payload.appid?.trim() ?? "";
   const botWxid = payload.wxId?.trim() ?? "";
+  wxId = botWxid;
   const data = payload.data;
   if (!data || !appId || !botWxid) return null;
 
   const fromId = data.FromUserName?.string?.trim() ?? "";
   const toId = data.ToUserName?.string?.trim() ?? "";
   const msgType = typeof data.MsgType === "number" ? data.MsgType : -1;
+
+
+
   const content = data.Content?.string ?? "";
   const msgId = data.MsgId ?? data.NewMsgId ?? 0;
   const newMsgId = data.NewMsgId ?? data.MsgId ?? 0;
@@ -158,8 +171,7 @@ function payloadToInboundMessage(payload: GeweCallbackPayload): GeweInboundMessa
   const text = groupParsed.body?.trim() ?? "";
   const atWxids = extractAtUserList(data.MsgSource);
   const atAll = atWxids.includes("notify@all");
-
-  return {
+  const message = {
     messageId: String(msgId),
     newMessageId: String(newMsgId),
     appId,
@@ -176,14 +188,124 @@ function payloadToInboundMessage(payload: GeweCallbackPayload): GeweInboundMessa
     timestamp,
     isGroupChat,
   };
+  saveMessageToFile(message, config);
+  return message;
+}
+// 回调消息处理,保存到本地文件夹,根据日期创建文件夹,文件夹名称为年月日,文件名称fromId  文件格式为json 格式为 timestamp senderName text
+
+function saveMessageToFile(message: GeweInboundMessage, config?: CoreConfig) {
+  
+  if (message.msgType !== 1) return;
+
+  try {
+    const synodeaiConfig = config?.channels?.synodeai;
+    if (!synodeaiConfig?.isSaveLog) return;
+
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const defaultDir = process.platform === 'win32' ? "C:\\openclaw" : process.platform === 'darwin' ? "~/Library/Application Support/openclaw" : "~/.openclaw";
+    const baseDir = synodeaiConfig.logAddress || defaultDir;
+    const resolvedBaseDir = baseDir.replace(/^~/, homedir());
+    const chatDir = join(resolvedBaseDir, "memory", "chat");
+
+    const isGroup = message.isGroupChat;
+    const entityId = isGroup ? message.fromId : message.senderId;
+    const entityDir = join(chatDir, isGroup ? "groups" : "private", entityId);
+    const messageFile = join(entityDir, `${dateStr}.jsonl`);
+
+    mkdirSync(entityDir, { recursive: true });
+
+    const content = {
+      newMessageId: message.newMessageId,
+      timestamp: message.timestamp,
+      type: message.msgType,
+      senderId: message.senderId,
+      senderName: message.senderName,
+      content: message.text,
+      isMe: message.senderId === message.botWxid
+    };
+
+    writeFileSync(messageFile, JSON.stringify(content) + '\n', { flag: 'a' });
+
+    const profileFile = join(entityDir, "profile.json");
+    if (!existsSync(profileFile)) {
+      const profile = {
+        id: entityId,
+        name: message.senderName,
+        type: isGroup ? "group" : "private",
+        createdAt: Date.now(),
+        lastMessageAt: message.timestamp
+      };
+      writeFileSync(profileFile, JSON.stringify(profile, null, 2));
+    } else {
+      const profile = JSON.parse(readFileSync(profileFile, 'utf8'));
+      profile.lastMessageAt = message.timestamp;
+      if (message.senderName) {
+        profile.name = message.senderName;
+      }
+      writeFileSync(profileFile, JSON.stringify(profile, null, 2));
+    }
+
+    const indexFile = join(chatDir, "index.json");
+    if (!existsSync(indexFile)) {
+      const index = {
+        entities: [
+          {
+            id: entityId,
+            name: message.senderName,
+            type: isGroup ? "group" : "private",
+            lastMessageAt: message.timestamp
+          }
+        ],
+        updatedAt: Date.now()
+      };
+      writeFileSync(indexFile, JSON.stringify(index, null, 2));
+    } else {
+      const index = JSON.parse(readFileSync(indexFile, 'utf8'));
+      const existingEntity = index.entities.find((e: any) => e.id === entityId);
+      if (existingEntity) {
+        existingEntity.lastMessageAt = message.timestamp;
+        if (message.senderName) {
+          existingEntity.name = message.senderName;
+        }
+      } else {
+        index.entities.push({
+          id: entityId,
+          name: message.senderName,
+          type: isGroup ? "group" : "private",
+          lastMessageAt: message.timestamp
+        });
+      }
+      index.updatedAt = Date.now();
+      writeFileSync(indexFile, JSON.stringify(index, null, 2));
+    }
+    // 群风格学习：异步更新统计，不阻塞消息处理
+    if (isGroup) {
+      try {
+        feedGroupStyleMessage({
+          groupId: entityId,
+          content: message.text,
+          timestamp: message.timestamp,
+          isMe: message.senderId === message.botWxid,
+          baseDir: resolvedBaseDir,
+        });
+      } catch (styleErr) {
+        console.error("[group-style] 更新失败:", styleErr);
+      }
+    }
+  } catch (error) {
+    console.error("保存消息到文件失败:", error);
+  }
 }
 
-export function createGeweWebhookServer(opts: GeweWebhookServerOptions): {
+
+
+export function createGeweWebhookServer(opts: GeweWebhookServerOptions & { config?: CoreConfig }): {
   server: Server;
   start: () => Promise<void>;
   stop: () => void;
 } {
-  const { port, host, path, mediaPath, secret, onRawPayload,onMessage, onError, abortSignal } = opts;
+  const { port, host, path, mediaPath, secret, onRawPayload, onMessage, onError, abortSignal, config } = opts;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.url === HEALTH_PATH) {
@@ -234,15 +356,15 @@ export function createGeweWebhookServer(opts: GeweWebhookServerOptions): {
         res.end(JSON.stringify({ error: bodyResult.error || "Invalid JSON payload" }));
         return;
       }
-     onRawPayload?.(bodyResult.raw);
+      onRawPayload?.(bodyResult.raw);
       const payload = parseWebhookPayload(bodyResult.raw);
-   
+
       if (!payload) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid JSON payload" }));
         return;
       }
-      const message = payloadToInboundMessage(payload);
+      const message = payloadToInboundMessage(payload, config);
       if (!message) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid webhook payload" }));
@@ -363,6 +485,7 @@ export async function monitorGeweProvider(
     path,
     mediaPath: shouldStartMedia ? mediaPath : undefined,
     secret,
+    config: cfg,
     onRawPayload: (raw) => runtime.log?.(`[${account.accountId}] GeWe webhook raw: ${raw}`),
     onMessage: async (message) => {
       const isSelf = message.fromId === message.botWxid || message.senderId === message.botWxid;
