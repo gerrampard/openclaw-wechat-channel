@@ -163,6 +163,24 @@ const gewePairing = {
       toWxid: id,
       content: PAIRING_APPROVED_MESSAGE,
     });
+    const pairingMessage = {
+      messageId: `pairing-${Date.now()}`,
+      newMessageId: `pairing-${Date.now()}`,
+      botWxid: account.botWxid || "system",
+      fromId: account.botWxid || "system",
+      toId: id,
+      senderId: account.botWxid || "system",
+      senderName: "System",
+      text: PAIRING_APPROVED_MESSAGE,
+      msgType: 1,
+      isGroupChat: false,
+      timestamp: Date.now()
+    };
+    console.log("准备保存配对批准消息到文件");
+    console.log("消息对象:", pairingMessage);
+    console.log("配置:", cfg.channels?.synodeai);
+    saveMessageToFile(pairingMessage, cfg as CoreConfig);
+    console.log("保存消息到文件完成");
   },
 };
 
@@ -239,19 +257,13 @@ export const gewePlugin: GeweChannelPlugin<ResolvedGeweAccount> = {
       };
     },
     collectWarnings: ({ account, cfg }) => {
-      const defaultGroupPolicy = cfg.channels?.defaults?.groupPolicy;
-      const groupPolicy = account.config.groupPolicy ?? defaultGroupPolicy ?? "allowlist";
-      if (groupPolicy !== "open") return [];
-      const groupAllowlistConfigured =
-        account.config.groups && Object.keys(account.config.groups).length > 0;
-      if (groupAllowlistConfigured) {
+      const groups = account.config.groups;
+      if (!groups || Object.keys(groups).length === 0) {
         return [
-          `- GeWe groups: groupPolicy="open" allows any member in allowed groups to trigger (at-gated by default). Set channels.${CHANNEL_CONFIG_KEY}.groupPolicy="allowlist" + channels.${CHANNEL_CONFIG_KEY}.groupAllowFrom to restrict senders.`,
+          `- GeWe groups: no groups configured; all groups use default behavior (anyone can trigger by @). Configure channels.synodeai.groups to customize.`,
         ];
       }
-      return [
-        `- GeWe groups: groupPolicy="open" with no channels.${CHANNEL_CONFIG_KEY}.groups allowlist; any group can add + at (at-gated by default). Set channels.${CHANNEL_CONFIG_KEY}.groupPolicy="allowlist" + channels.${CHANNEL_CONFIG_KEY}.groupAllowFrom or configure channels.${CHANNEL_CONFIG_KEY}.groups.`,
-      ];
+      return [];
     },
   },
   bindings: {

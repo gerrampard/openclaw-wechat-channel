@@ -9,12 +9,9 @@ import {
 } from "./openclaw-compat.js";
 import type { GeweGroupReplyModeInput } from "./types.js";
 import { z } from "zod";
+const GeweGroupAccessSchema = z.enum(["all", "allowlist", "claim"]).optional();
+const GeweGroupTriggerSimpleSchema = z.enum(["at", "any"]).optional();
 const GEWE_GROUP_REPLY_MODES = ["plain", "quote_source", "at_sender", "quote_and_at"] as const;
-const GeweGroupTriggerSchema = z
-  .object({
-    mode: z.enum(["at", "quote", "at_or_quote", "any_message"]).optional(),
-  })
-  .strict();
 
 const GeweDmTriggerSchema = z
   .object({
@@ -84,13 +81,13 @@ const GeweBindingIdentitySchema = z
 
 export const GeweGroupSchema = z
   .object({
-    requireMention: z.boolean().optional(),
+    access: GeweGroupAccessSchema,
+    trigger: GeweGroupTriggerSimpleSchema,
     tools: ToolPolicySchema.optional(),
     skills: z.array(z.string()).optional(),
     enabled: z.boolean().optional(),
     allowFrom: z.array(z.string()).optional(),
     systemPrompt: z.string().optional(),
-    trigger: GeweGroupTriggerSchema.optional(),
     reply: GeweGroupReplySchema.optional(),
     bindingIdentity: GeweBindingIdentitySchema.optional(),
   })

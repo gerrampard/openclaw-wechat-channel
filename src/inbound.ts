@@ -33,12 +33,10 @@ import {
   resolveGeweDmMatch,
   resolveGeweDmReplyMode,
   resolveGeweDmTriggerMode,
-  resolveGeweGroupAllow,
-  resolveGeweGroupMatch,
-  resolveGeweGroupReplyMode,
-  resolveGeweGroupTriggerMode,
   resolveGeweTriggerGate,
 } from "./policy.js";
+import { resolveGroupContext } from "./group-context.js";
+import type { ResolvedGroupContext } from "./group-context.js";
 import type {
   CoreConfig,
   GeweDmReplyMode,
@@ -792,28 +790,18 @@ export async function handleGeweInboundBatch(params: {
   });
 
   const dmPolicy = account.config.dmPolicy ?? "pairing";
-  const defaultGroupPolicy = config.channels?.defaults?.groupPolicy;
-  const groupPolicy = account.config.groupPolicy ?? defaultGroupPolicy ?? "allowlist";
 
   const configAllowFrom = normalizeGeweAllowlist(account.config.allowFrom);
-  const configGroupAllowFrom = normalizeGeweAllowlist(account.config.groupAllowFrom);
   const storeAllowFrom = await readGeweAllowFromStore({
     accountId: account.accountId,
   }).catch((err) => {
     runtime.error?.(
       `SynodeAI: failed reading local allowFrom store for ${account.accountId}: ${String(err)}`,
     );
-    return [];
+    return [] as Array<string | number>;
   });
   const storeAllowList = normalizeGeweAllowlist(storeAllowFrom);
 
-  const groupMatch = isGroup
-    ? resolveGeweGroupMatch({
-        groups: account.config.groups,
-        groupId: groupId ?? "",
-        groupName: undefined,
-      })
-    : undefined;
   const dmMatch = !isGroup
     ? resolveGeweDmMatch({
         dms: account.config.dms,
@@ -822,61 +810,62 @@ export async function handleGeweInboundBatch(params: {
       })
     : undefined;
 
-  if (isGroup && groupMatch && !groupMatch.allowed) {
-    runtime.log?.(`SynodeAI: drop group ${groupId} (not allowlisted)`);
-    return;
-  }
-  if (groupMatch?.groupConfig?.enabled === false || groupMatch?.wildcardConfig?.enabled === false) {
-    runtime.log?.(`SynodeAI: drop group ${groupId} (disabled)`);
-    return;
-  }
-
-  const directRoomAllowFrom = normalizeGeweAllowlist(groupMatch?.groupConfig?.allowFrom);
-  const wildcardRoomAllowFrom = normalizeGeweAllowlist(groupMatch?.wildcardConfig?.allowFrom);
-  const roomAllowFrom =
-    directRoomAllowFrom.length > 0 ? directRoomAllowFrom : wildcardRoomAllowFrom;
-  const baseGroupAllowFrom =
-    configGroupAllowFrom.length > 0 ? configGroupAllowFrom : configAllowFrom;
   const effectiveAllowFrom = [...configAllowFrom, ...storeAllowList].filter(Boolean);
-  const effectiveGroupAllowFrom = [...baseGroupAllowFrom, ...storeAllowList].filter(Boolean);
+
+  let groupCtx: ResolvedGroupContext | undefined;
 
   const allowTextCommands = core.channel.commands.shouldHandleTextCommands({
     cfg: config as OpenClawConfig,
     surface: CHANNEL_ID,
   });
-  const useAccessGroups = config.commands?.useAccessGroups !== false;
-  const senderAllowedForCommands = resolveGeweAllowlistMatch({
-    allowFrom: isGroup ? effectiveGroupAllowFrom : effectiveAllowFrom,
-    senderId,
-    senderName,
-  }).allowed;
   const hasControlCommand = core.channel.text.hasControlCommand(
     rawBodyCandidate,
     config as OpenClawConfig,
   );
-  const commandGate = resolveControlCommandGate({
-    useAccessGroups,
-    authorizers: [
-      {
-        configured: (isGroup ? effectiveGroupAllowFrom : effectiveAllowFrom).length > 0,
-        allowed: senderAllowedForCommands,
-      },
-    ],
-    allowTextCommands,
-    hasControlCommand,
-  });
-  const commandAuthorized = commandGate.commandAuthorized;
 
   if (isGroup) {
-    const groupAllow = resolveGeweGroupAllow({
-      groupPolicy,
-      outerAllowFrom: effectiveGroupAllowFrom,
-      innerAllowFrom: roomAllowFrom,
+    groupCtx = resolveGroupContext({
+      account,
+      groupId: groupId ?? "",
       senderId,
-      senderName,
+      senderName: senderName || undefined,
+      storeAllowFrom: storeAllowList,
     });
-    if (!groupAllow.allowed) {
-      runtime.log?.(`gewe: drop group sender ${senderId} (policy=${groupPolicy})`);
+
+    if (!groupCtx.enabled) {
+      runtime.log?.(`SynodeAI: drop group ${groupId} (disabled)`);
+      return;
+    }
+
+    if (!groupCtx.senderAllowed) {
+      runtime.log?.(`gewe: drop group sender ${senderId} in ${groupId} (access=${groupCtx.access})`);
+
+      // claim mode: check for claim code redemption
+      if (groupCtx.access === "claim") {
+        const claimCode = resolveGeweGroupClaimCodeCandidate(rawBodyCandidate);
+        if (claimCode) {
+          const redeemed = await redeemGeweGroupClaimCode({
+            accountId: account.accountId,
+            code: claimCode,
+            issuerId: senderId,
+            groupId: groupId ?? "",
+          }).catch((err) => {
+            runtime.error?.(`gewe: group claim redeem failed: ${String(err)}`);
+            return null;
+          });
+          if (redeemed) {
+            try {
+              await deliverGewePayload({
+                payload: { text: GEWE_GROUP_CLAIM_CODE_SUCCESS_REPLY },
+                account,
+                cfg: config as OpenClawConfig,
+                toWxid,
+                statusSink: (patch) => statusSink?.(patch),
+              });
+            } catch {}
+          }
+        }
+      }
       return;
     }
   } else {
@@ -923,7 +912,46 @@ export async function handleGeweInboundBatch(params: {
     }
   }
 
-  if (isGroup && commandGate.shouldBlock) {
+  // Command authorization
+  const useAccessGroups = config.commands?.useAccessGroups !== false;
+  let commandAuthorized: boolean;
+  let commandShouldBlock = false;
+  if (isGroup) {
+    commandAuthorized = groupCtx!.commandAuthorized;
+    // Replicate the original commandGate.shouldBlock logic for groups
+    const groupCommandGate = resolveControlCommandGate({
+      useAccessGroups,
+      authorizers: [
+        {
+          configured: true,
+          allowed: commandAuthorized,
+        },
+      ],
+      allowTextCommands,
+      hasControlCommand,
+    });
+    commandShouldBlock = groupCommandGate.shouldBlock;
+  } else {
+    const senderAllowedForCommands = resolveGeweAllowlistMatch({
+      allowFrom: effectiveAllowFrom,
+      senderId,
+      senderName,
+    }).allowed;
+    const commandGate = resolveControlCommandGate({
+      useAccessGroups,
+      authorizers: [
+        {
+          configured: effectiveAllowFrom.length > 0,
+          allowed: senderAllowedForCommands,
+        },
+      ],
+      allowTextCommands,
+      hasControlCommand,
+    });
+    commandAuthorized = commandGate.commandAuthorized;
+  }
+
+  if (isGroup && commandShouldBlock) {
     logInboundDrop({
       log: (msg) => runtime.log?.(msg),
       channel: CHANNEL_ID,
@@ -971,10 +999,7 @@ export async function handleGeweInboundBatch(params: {
     botWxid: lastMessage.botWxid,
   });
   const triggerMode = isGroup
-    ? resolveGeweGroupTriggerMode({
-        groupConfig: groupMatch?.groupConfig,
-        wildcardConfig: groupMatch?.wildcardConfig,
-      })
+    ? groupCtx!.legacyTriggerMode
     : resolveGeweDmTriggerMode({
         dmConfig: dmMatch?.dmConfig,
         wildcardConfig: dmMatch?.wildcardConfig,
@@ -1035,21 +1060,15 @@ export async function handleGeweInboundBatch(params: {
     groupId,
     groupName: undefined,
     groupSystemPrompt: isGroup
-      ? groupMatch?.groupConfig?.systemPrompt?.trim() ||
-        groupMatch?.wildcardConfig?.systemPrompt?.trim() ||
-        undefined
+      ? groupCtx!.systemPrompt
       : dmMatch?.dmConfig?.systemPrompt?.trim() ||
         dmMatch?.wildcardConfig?.systemPrompt?.trim() ||
         undefined,
     groupSkillFilter: isGroup
-      ? groupMatch?.groupConfig?.skills ?? groupMatch?.wildcardConfig?.skills
+      ? groupCtx!.skillFilter
       : dmMatch?.dmConfig?.skills ?? dmMatch?.wildcardConfig?.skills,
     replyMode: isGroup
-      ? resolveGeweGroupReplyMode({
-          groupConfig: groupMatch?.groupConfig,
-          wildcardConfig: groupMatch?.wildcardConfig,
-          autoQuoteReply: account.config.autoQuoteReply,
-        })
+      ? groupCtx!.replyMode
       : resolveGeweDmReplyMode({
           dmConfig: dmMatch?.dmConfig,
           wildcardConfig: dmMatch?.wildcardConfig,

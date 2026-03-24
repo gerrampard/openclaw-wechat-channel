@@ -15,6 +15,12 @@ export type GeweGroupReplyModeInput = GeweGroupReplyMode | GeweDeprecatedGroupRe
 export type ResolvedGeweGroupReplyMode = GeweGroupReplyMode | "quote_and_at_compat";
 export type GeweDmReplyMode = "plain" | "quote_source";
 
+/** 群准入模式 */
+export type GeweGroupAccessMode = "all" | "allowlist" | "claim";
+
+/** 群触发模式（简化版） */
+export type GeweGroupSimpleTrigger = "at" | "any";
+
 export type GeweGroupTriggerConfig = {
   mode?: GeweGroupTriggerMode;
 };
@@ -55,13 +61,13 @@ export type GeweGroupBindingIdentityConfig = {
 };
 
 export type GeweGroupConfig = {
-  requireMention?: boolean;
+  access?: GeweGroupAccessMode;
+  trigger?: GeweGroupSimpleTrigger;
   tools?: GroupToolPolicyConfig;
   skills?: string[];
   enabled?: boolean;
   allowFrom?: string[];
   systemPrompt?: string;
-  trigger?: GeweGroupTriggerConfig;
   reply?: GeweGroupReplyConfig;
   bindingIdentity?: GeweGroupBindingIdentityConfig;
 };

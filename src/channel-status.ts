@@ -146,7 +146,7 @@ export const geweStatus: ChannelStatusAdapter<ResolvedGeweAccount, GeweStatusPro
       lastInboundAt: runtime?.lastInboundAt ?? null,
       lastOutboundAt: runtime?.lastOutboundAt ?? null,
       dmPolicy: account.config.dmPolicy ?? "pairing",
-      groupPolicy: account.config.groupPolicy ?? "allowlist",
+      groupPolicy: account.config.groupPolicy ?? "all+at (default)",
       apiReachable: probe?.ok ?? false,
       apiLatencyMs: probe?.latencyMs ?? null,
       self: probe?.self ?? null,
